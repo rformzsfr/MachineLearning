@@ -1,0 +1,146 @@
+---
+title: "Machine Learning Course Project"
+author: "Rodolfo Ramírez Schiefer"
+date: "1/16/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(corrplot)
+library(doParallel)
+registerDoParallel(cores=7)
+setwd("/Users/Rodolfo/INFOMEDIA/Consultoría/Curso Data Scientist/8 - Machine Learning")
+```
+
+## Introduction
+
+The goal of this project is to predict the manner in which several subjects performed a Biceps Curl exercise. Six young healthy participants were asked to perform sets of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+* Class A - Exactly according to the specification
+* Class B - Throwing the elbows to the front
+* Class C - Lifting the dumbbell only halfway
+* Class D - Lowering the dumbbell only halfway
+* Class E - Throwing the hips to the front
+
+A large number repetitions were performed in one of these 5 ways and the data of the sensors and the type of repetition were logged. This constitutes the **training** data set.
+
+In the same way, 20 repetitions were performed while wearing the sensors, but the class was not logged. This data is the **test** data set, and it's class will be predicted in this project.
+
+
+## Obtaining and Cleaning Data
+The data is read from files on the working directory and **NA** and **#DIV/0!** values are marked as *na*.
+```{r data, echo=TRUE, cache=TRUE}
+raw_training <- read.table("./pml-training.csv", header = TRUE, sep = ",",na.strings = c("NA", "#DIV/0!"))
+raw_testing  <- read.table("./pml-testing.csv",  header = TRUE, sep = ",",na.strings = c("NA", "#DIV/0!"))
+```
+
+The *training* data set contains a total of **`r length(names(raw_training))`** attributes and **`r dim(raw_training)[1]`** rows.  
+Attributes 1 to 7 contain data such as the name of the test subject and timestamps of data acquisition, which will be disregarded for this study. Attributes 8 to 159 contain data of sensors at the arm, dumbbell, belt or forearm. Attribute 160, **'classe'**, represents the way in which the excercise was performed and is the attribute to be predicted.
+
+Attributes 1 through 7 are removed from the data set by selecting only those whose names contain the words 'belt', 'arm', 'dumbbell' or 'forearm' and attaching column *'classe'*.
+```{r cleaning}
+dataColumns <- grep(pattern = "_belt|_arm|_dumbbell|_forearm", names(raw_training))
+training <- raw_training[, c(dataColumns,160)]
+```
+
+Many of the remaining **`r length(names(training))-1`** data attributes contain only or mostly NA's. These attributes are removed as well.
+```{r NAs}
+naAttributes <- is.na(training)
+removeColumns <- which(colSums(naAttributes) > 19000)
+training <- training[, -removeColumns]
+```
+
+These exclusions reduce the data set to the following **`r length(names(training))-1`** data attributes:
+```{r summary, echo=FALSE}
+names(training)
+```
+
+
+## Identifying Correlations
+To determine if some other factors may be removed, the correlation of the remaining **`r length(names(training))-1`** variables in the *training* data set is examined.
+```{r correlations}
+res <- cor(training[,1:52])
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```  
+
+This plot shows that, in fact, some factors are correlated, both directly and inversely. Before going forward with removing some of these factors, an initial model will be trained and tested to determine if further factor selection is necessary.
+
+
+## Dividing *Training* Data Set for Cross Validation
+The *training* and *validation* data sets are generated from the initial *training* data set. The *validation* data set is obtained by randomly selecting 25% of the occurences of the original data set.
+```{r validation}
+forTraining <- createDataPartition(y=training$classe, p=0.75, list=FALSE)
+trainData <- training[forTraining,]
+validateData <- training[-forTraining,]
+```
+*trainData* contains **`r dim(trainData)[1]`** rows and *validateData* contains **`r dim(validateData)[1]`** rows.
+  
+  
+## Creating a New 'Scaled' Data Sets
+The range of values obtained by each sensor varies widely depending on where it is placed. To account for this, a new pair of data sets created from the original *training* and *testing* data sets. The data of these new data sets is centered and standarized using the **scale** function so that, for all variables, the mean and standard deviation are 0 and 1 respectively. By doing so small changes in sensors with small ranges will have an equivalent effect on the prediction as will large ranges on sensors with a wider range of movement.
+```{r standarize, echo=TRUE}
+#Scaled TRAINING and VALIDATING data sets
+training_std <- data.frame(scale(training[,1:52], center=TRUE, scale=TRUE),training[,53])
+names(training_std)[53] <- "classe"
+trainStdData <- training_std[forTraining,]
+validateStdData <- training_std[-forTraining,]
+#dim(trainStdData); dim(validateStdData)
+
+#Scaled TESTING data set
+#testStdData <- data.frame(scale(testData[,1:52], center=TRUE, scale=TRUE),testData[,53])
+#names(testStdData)[53] <- "classe"
+#dim(testStdData)
+```
+
+
+## Training the Models
+Two predictive models are trained using **Random Forrest** method, one for the **regular** and another for the **scaled** *testing* data sets.
+```{r training, echo=TRUE, cache=TRUE}
+set.seed(2525)
+modelFitRF <- train(classe ~., data=trainData, method="rf") 
+###modelFitRFpca <- train(classe ~., data=trainData, method="rf", preProcess="pca")  
+
+modelStdFitRF <- train(classe ~., data=trainStdData, method="rf") 
+#modelstdFitRFpca <- train(classe ~., data=train_stdData, method="rf", preProcess="pca") 
+
+```
+
+## Validating the Models
+The models are validated against the *validating* data sets to deterime their predictive ability.
+```{r validating, echo=TRUE, message=FALSE}
+predictRF <- predict(modelFitRF, newdata=validateData)
+predictStdRF <- predict(modelStdFitRF, newdata=validateStdData)
+conf <- confusionMatrix(predictRF, validateData$classe)
+confStd <- confusionMatrix(predictStdRF, validateStdData$classe)
+```
+
+The model trained on the **raw** data has a predictive ability of **`r round(conf$overall[1]*100,3)`%**.
+```{r confusion1, echo=FALSE}
+conf$overall
+```
+
+The model trained on the **scaled** data has a predictive ability of **`r round(confStd$overall[1]*100,3)`%**.
+```{r confusion2, echo=FALSE}
+confStd$overall
+```
+
+Both models have very high predictive ability, but that of the model trained on the **raw** data is slightly higher. For that reason, it is the model trained on **raw** data that will be used to predict the *class* of the *test* data set.
+
+
+## Preparing the *Test* Data Set
+Columns with NA's or non-measurement data are removed from the *test* data set in the same way they were removed from the *training* data set.
+```{r testData}
+testData <- raw_testing[, c(dataColumns,160)]
+testData <- testData[, -removeColumns]
+```
+
+
+## Predicting **CLASS** of *Test* Data Set
+Using the model trained on the raw unscaled data, the *class* of the *test* data set is predicted as follows.
+```{r predicting, echo=FALSE}
+predictTest <- predict(modelFitRF, newdata = testData)
+predictTest
+```
